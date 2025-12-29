@@ -4,7 +4,7 @@ const readline = require("readline");
 const { spawn, exec } = require("child_process");
 
 /** * ============================================================
- * THE FULL VEXAL MANUAL (v10.2.2 - COMPILER PATCHED)
+ * THE FULL VEXAL MANUAL (v10.4)
  * ============================================================
  */
 const VEXAL_DOCS = [
@@ -16,19 +16,26 @@ const VEXAL_DOCS = [
 * let-
   this 'name' is value`,
 
-  `[DOCS: LOOPS & MATH]
+  `[DOCS: LOOPS & LOGIC]
 * for loop-
   loop! [counter] { code }
-* math-
-  debug! (1+1) 
-  (Math MUST be in parentheses)`,
+* conditionals-
+  if (1+1) is 2 { ... } elseif ...
+* exit-
+  bussin`,
 
-  `[DOCS: TYPES & AUTOSTATUS]
-* "value"        -> :str
-* value:str      -> :str
-* value          -> :str (by autostatus)
-* 1              -> :str (by autostatus)
-* 1:num          -> :num`,
+  `[DOCS: TYPES & NUMBERS]
+* "val"          -> :str
+* 10             -> :str (AutoStatus anti-freeze)
+* -50            -> :str (Negative support)
+* 10:num         -> :num
+* (1+1)          -> :num
+* rng! [min,max] -> :num`,
+
+  `[DOCS: MATH & UTILS]
+* debug! (10 + -5)
+* debug! rng! [-10, 10]
+* debug! "Text"`,
 ];
 
 /** * ============================================================
@@ -94,7 +101,6 @@ function lexer(input) {
         tokens.push({ type: "null", value: null, line });
       else if (value === "undefined")
         tokens.push({ type: "undefined", value: undefined, line });
-      else if (value === "random") tokens.push({ type: "random", value, line });
       else if (value === "bussin") tokens.push({ type: "bussin", value, line });
       else tokens.push({ type: "name", value, line });
       continue;
@@ -151,16 +157,20 @@ function parser(tokens) {
     let parts = [];
     let first = walk(true);
     if (!first) return null;
+
+    // Expressions that return values directly
     if (
       [
         "BinaryExpression",
-        "RandomExpression",
+        "RngExpression",
         "Comparison",
         "BooleanLiteral",
+        "UnaryExpression",
       ].includes(first.type)
     ) {
       return first;
     }
+
     parts.push(first);
     while (current < tokens.length) {
       let nextTok = peek();
@@ -184,6 +194,22 @@ function parser(tokens) {
     let token = tokens[current];
     if (!token) return null;
 
+    // --- HANDLE NEGATIVE NUMBERS (Unary Minus) ---
+    // If we see a '-' where a value is expected, it's a negative number/expression
+    if (token.type === "symbol" && token.value === "-") {
+      // Look ahead to see if it's a number or identifier
+      let next = peekNext();
+      if (
+        next &&
+        (next.type === "number" || next.type === "name" || next.value === "(")
+      ) {
+        current++; // Consume '-'
+        let argument = walk(insidePhrase);
+        return { type: "UnaryExpression", operator: "-", argument };
+      }
+    }
+
+    // --- HANDLE CASTS (10:num) ---
     if (peekNext() && peekNext().value === ":") {
       let valNode = null;
       if (token.type === "number")
@@ -255,14 +281,10 @@ function parser(tokens) {
         return left;
       }
       if (!["{", "}", "[", "]", "(", ")", ","].includes(token.value)) {
+        // If it wasn't a unary minus (handled above) or a grouper, treat as string
         current++;
         return { type: "StringLiteral", value: token.value };
       }
-    }
-
-    if (token.type === "random") {
-      current++;
-      return { type: "RandomExpression", min: walk(), max: walk() };
     }
 
     if (token.type === "name") {
@@ -301,9 +323,8 @@ function parser(tokens) {
         current++;
         if (isConst && peek() && peek().value === "this") current++;
 
-        if (peek().type !== "string") {
+        if (peek().type !== "string")
           throw new Error("syntax error: variable must be a quoted string");
-        }
 
         let name = tokens[current].value;
         current++;
@@ -330,6 +351,20 @@ function parser(tokens) {
 
       if (token.value.endsWith("!")) {
         let name = token.value.replace("!", "");
+
+        if (name === "rng") {
+          current++;
+          if (peek() && peek().value === "[") {
+            current++;
+            let min = walk();
+            if (peek() && peek().value === ",") current++;
+            let max = walk();
+            if (peek() && peek().value === "]") current++;
+            return { type: "RngExpression", min, max };
+          }
+          throw new Error("rng! syntax error. Expected: rng! [min, max]");
+        }
+
         if (name === "loop") {
           current++;
           let times = null;
@@ -369,6 +404,7 @@ function parser(tokens) {
           current++;
           return { type: "BanishCommand", rawTarget };
         }
+
         current++;
         let params = [];
         while (peek() && !["}", "]", ")"].includes(peek().value)) {
@@ -409,7 +445,7 @@ function parser(tokens) {
 }
 
 /** * ============================================================
- * SECTION 3: THE TRANSCRIBER (COMPILER PATCHED)
+ * SECTION 3: THE TRANSCRIBER
  * ============================================================
  */
 function compile(ast) {
@@ -441,7 +477,6 @@ const _vexHelper = {
         return node.body.map((n) => t(n)).join("\n");
 
       case "VariableDeclaration":
-        // Fix: If assigning a Loop or If statement, wrap in IIFE
         let valCode = t(node.value, "decl");
         if (["LoopStatement", "IfStatement"].includes(node.value.type)) {
           valCode = `(() => { ${valCode} })()`;
@@ -495,7 +530,10 @@ const _vexHelper = {
           "math"
         )})`;
 
-      case "RandomExpression":
+      case "UnaryExpression":
+        return `(-${t(node.argument, "math")})`;
+
+      case "RngExpression":
         return `_vexHelper.random(${t(node.min, "math")}, ${t(
           node.max,
           "math"
@@ -515,7 +553,6 @@ const _vexHelper = {
       case "CutCommand":
         return `// cut! ignored in compiled`;
 
-      // --- PRIMITIVES & AUTOSTATUS ---
       case "NumberLiteral":
         if (parentContext === "decl" || parentContext === "call")
           return `"${node.value}"`;
@@ -583,7 +620,6 @@ function interpreter(node, env) {
       node.body.forEach((s) => interpreter(s, env));
       return;
     case "BussinStatement":
-      console.log("Bussin. Exiting...");
       process.exit(0);
     case "OpenFileCommand":
       promptForFile();
@@ -613,7 +649,21 @@ function interpreter(node, env) {
     case "VariableDeclaration": {
       let varName = node.name;
       let initVal = interpreter(node.value, env);
-      if (node.value.type === "NumberLiteral") initVal = String(initVal);
+
+      // AUTOSTATUS LOGIC (Unless Unary/Math)
+      if (
+        node.value.type === "NumberLiteral" ||
+        node.value.type === "UnaryExpression"
+      ) {
+        // Check if unary resolved to a number
+        if (typeof initVal === "number") initVal = String(initVal);
+      }
+
+      if (node.value.type === "CastExpression") {
+        const reqType = node.value.status;
+        if (!checkType(initVal, reqType)) return;
+      }
+
       env.values[varName] = initVal;
       if (node.isConstant) env.constants.add(varName);
       return;
@@ -621,12 +671,22 @@ function interpreter(node, env) {
 
     case "Assignment": {
       let targetName = node.name;
-      if (!env.values.hasOwnProperty(targetName))
-        throw new Error(`[ReferenceError] '${targetName}' undefined.`);
-      if (env.constants.has(targetName))
-        throw new Error(`[Error] '${targetName}' is fr (constant).`);
+      if (!env.values.hasOwnProperty(targetName)) return;
+      if (env.constants.has(targetName)) return;
+
       let assignVal = interpreter(node.value, env);
-      if (node.value.type === "NumberLiteral") assignVal = String(assignVal);
+      if (
+        node.value.type === "NumberLiteral" ||
+        node.value.type === "UnaryExpression"
+      ) {
+        if (typeof assignVal === "number") assignVal = String(assignVal);
+      }
+
+      if (node.value.type === "CastExpression") {
+        const reqType = node.value.status;
+        if (!checkType(assignVal, reqType)) return;
+      }
+
       env.values[targetName] = assignVal;
       return;
     }
@@ -634,9 +694,6 @@ function interpreter(node, env) {
     case "CutCommand": {
       if (node.mode === "toggle") {
         env.autoStatus = !env.autoStatus;
-        console.log(
-          `[System] AutoStatus is now: ${env.autoStatus ? "ON" : "OFF"}`
-        );
       } else {
         let name = node.rawTarget;
         if (env.constants.has(name)) env.constants.delete(name);
@@ -704,6 +761,16 @@ function interpreter(node, env) {
       if (node.operator === "/") return l / r;
       return 0;
     }
+    case "UnaryExpression": {
+      const val = interpreter(node.argument, env);
+      if (node.operator === "-") return -Number(val);
+      return val;
+    }
+    case "RngExpression": {
+      const min = Number(interpreter(node.min, env));
+      const max = Number(interpreter(node.max, env));
+      return Math.floor(Math.random() * (max - min + 1) + min);
+    }
     case "NumberLiteral":
       return node.value;
     case "StringLiteral":
@@ -714,11 +781,6 @@ function interpreter(node, env) {
       return null;
     case "UndefinedLiteral":
       return undefined;
-    case "RandomExpression": {
-      const min = interpreter(node.min, env);
-      const max = interpreter(node.max, env);
-      return Math.floor(Math.random() * (max - min + 1) + min);
-    }
   }
 }
 
@@ -797,7 +859,7 @@ function startFileMode(filePath) {
   try {
     resetEnv();
     const code = fs.readFileSync(filePath, "utf8");
-    console.log(`\n=== VEXAL v10.2: ${path.basename(filePath)} ===`);
+    console.log(`\n=== VEXAL v10.4: ${path.basename(filePath)} ===`);
     runVexal(code);
     console.log(`\n=== END ===`);
   } catch (err) {
@@ -846,7 +908,7 @@ function startReplMode(preserveState = false) {
   activeRL = rl;
   if (!preserveState) resetEnv();
   console.log(
-    `VEXAL v10.2 | ${
+    `VEXAL v10.4 | ${
       preserveState ? "Interactive" : "REPL"
     } | Type 'vx' for docs.`
   );
@@ -870,7 +932,7 @@ if (rawArg) {
   });
   activeRL = rl;
   console.log("========================================");
-  console.log("          VEXAL v10.2 - Ready           ");
+  console.log("          VEXAL v10.4 - Ready           ");
   console.log("========================================");
   rl.question("Run a file? (y/n): ", (answer) => {
     rl.close();
