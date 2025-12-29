@@ -25,5 +25,15 @@ whatever pacakge manager
 # Full docs in the REPL command
 
 ```bash
+# After running the program with Bun, NPM etc, close the dialog asking if you want to open a file, then type:
 vx
+```
+
+# Basic knowledge: .vx files
+
+You can run .vx files with VexalScript inside. You eed to get the filepath for the .vx file, then paste it when prompted upon startup, or run:
+
+```bash
+openfile
+# Run in REPL
 ```
